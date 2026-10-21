@@ -1,6 +1,9 @@
 using AlfaHackaton.Auth;
 using AlfaHackaton.Controllers;
+using AlfaHackaton.HttpClient;
 using AuthService.Common;
+using AuthService.Services;
+using AuthService.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,13 +17,9 @@ builder.Services
 // а TokenParser у гейтвея ждёт именно длинный URI
 System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler.DefaultOutboundClaimTypeMap.Clear();
 
-// HttpClient для походов в user-service (с общим секретом кластера)
-builder.Services.AddHttpClient("UserService", client =>
-{
-    client.BaseAddress = new Uri(builder.Configuration["Services:UserService"]
-        ?? throw new InvalidOperationException("Не задан адрес user-service (Services:UserService)"));
-    client.DefaultRequestHeaders.Add("X-Internal-Secret", builder.Configuration["Internal:Secret"] ?? string.Empty);
-});
+// Клиент user-service через AlfaHackaton.HttpClient:
+// BaseAddress/секрет в UserServiceClientSettings, DI — через пакет
+builder.Services.AddAlfaHttpClient(new UserServiceClientSettings(builder.Configuration));
 
 builder.Services.AddControllers(options =>
 {
