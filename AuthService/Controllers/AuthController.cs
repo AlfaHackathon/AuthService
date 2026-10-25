@@ -15,7 +15,7 @@ namespace AuthService.Controllers;
 /// Префикс auth-service добавляется глобально через RoutePrefixConvention.
 /// </summary>
 [ApiController]
-public class AuthController : ControllerBase
+public class  AuthController : ControllerBase
 {
     private const string TokenTypeClaim = "token_type";
     private const string AccessTokenType = "access";
@@ -25,14 +25,16 @@ public class AuthController : ControllerBase
     private const int DefaultRefreshTokenExpiry = 60 * 24;      // 1 день (меньше access)
 
     private readonly IUserServiceClient _userClient;
+    private readonly ICompanyServiceClient _companyClient;
     private readonly TokenBuilder _tokenBuilder;
     private readonly ITokenValidator _tokenValidator;
     private readonly IConfiguration _configuration;
 
-    public AuthController(IUserServiceClient userClient, TokenBuilder tokenBuilder,
+    public AuthController(IUserServiceClient userClient, ICompanyServiceClient companyClient, TokenBuilder tokenBuilder,
         ITokenValidator tokenValidator, IConfiguration configuration)
     {
         _userClient = userClient;
+        _companyClient = companyClient;
         _tokenBuilder = tokenBuilder;
         _tokenValidator = tokenValidator;
         _configuration = configuration;
@@ -74,6 +76,58 @@ public class AuthController : ControllerBase
         if (user is null)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Не удалось создать пользователя" });
+        }
+
+        return Ok(BuildTokenPair(user.Id));
+    }
+
+    /// <summary>
+    /// Регистрация по инвайт-ссылке: проверяет код (company-service), что email свободен,
+    /// создаёт пользователя в user-service и прикрепляет его к компании приглашения
+    /// (инвайт после этого удаляется в company-service).
+    /// Возвращает пару access/refresh JWT-токенов.
+    /// </summary>
+    [HttpPost("register-invite")]
+    public async Task<IActionResult> RegisterByInvite([FromBody] RegisterByInviteRequest request, CancellationToken cancellationToken = default)
+    {
+        // 1. Код инвайта валиден и не протух/не использован
+        var invite = await _companyClient.ValidateInviteAsync(request.Code, cancellationToken);
+        if (invite is null)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "company-service недоступен" });
+        }
+
+        if (!invite.Valid)
+        {
+            return StatusCode(invite.StatusCode ?? StatusCodes.Status400BadRequest,
+                new { error = invite.Reason ?? "Инвайт невалиден" });
+        }
+
+        // 2. Email ещё не занят
+        var exists = await _userClient.ExistsByEmailAsync(request.Email, cancellationToken);
+        if (exists)
+        {
+            return Conflict(new { error = $"Пользователь с email {request.Email} уже существует" });
+        }
+
+        // 3. Создать пользователя
+        var user = await _userClient.AddAsync(new CreateUserRequest(
+            request.LastName, request.FirstName, request.MiddleName,
+            request.Email, PasswordHasher.Hash(request.Password)), cancellationToken);
+
+        if (user is null)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "Не удалось создать пользователя" });
+        }
+
+        // 4. Прикрепить к компании инвайта (company-service добавит в участники и удалит инвайт)
+        var use = await _companyClient.UseInviteAsync(request.Code, user.Id, cancellationToken);
+        if (!use.Success)
+        {
+            // пользователь уже создан — откатывать нечего, кроме опыта: юзер сможет
+            // залогиниться обычным путём, но компания не назначена. Отдаём ошибку компании.
+            return StatusCode(use.Status == 0 ? StatusCodes.Status503ServiceUnavailable : use.Status,
+                new { error = use.Error ?? "Не удалось присоединиться к компании" });
         }
 
         return Ok(BuildTokenPair(user.Id));
@@ -153,6 +207,12 @@ public record LoginRequest(string Email, string Password);
 /// Данные для регистрации.
 /// </summary>
 public record RegisterRequest(string Email, string Password, string LastName, string FirstName, string? MiddleName);
+
+/// <summary>
+/// Данные для регистрации по инвайт-ссылке: Code — код из ссылки.
+/// </summary>
+public record RegisterByInviteRequest(string Code, string Email, string Password,
+    string LastName, string FirstName, string? MiddleName);
 
 /// <summary>
 /// Результат для проверки регистрации email.

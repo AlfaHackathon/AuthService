@@ -21,6 +21,13 @@ System.IdentityModel.Tokens.Jwt.JwtSecurityTokenHandler.DefaultOutboundClaimType
 // BaseAddress/секрет в UserServiceClientSettings, DI — через пакет
 builder.Services.AddAlfaHttpClient(new UserServiceClientSettings(builder.Configuration));
 
+// Клиент company-service: проверка/использование инвайтов при регистрации по ссылке
+builder.Services.AddAlfaHttpClient(new CompanyServiceClientSettings(builder.Configuration));
+
+builder.Services.AddScoped<IUserServiceClient, UserServiceClient>();
+builder.Services.AddScoped<ICompanyServiceClient, CompanyServiceClient>();
+builder.Services.AddScoped<IUserServiceClient, UserServiceClient>();
+
 builder.Services.AddControllers(options =>
 {
     // Глобальный префикс auth-service для всех контроллеров
